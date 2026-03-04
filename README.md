@@ -9,29 +9,37 @@ A Ronchigram is an in-focus diffraction pattern formed by a STEM (Scanning Trans
 
 The relativistically corrected de Broglie wavelength of the electron beam is:
 
-```
-λ = 12.3986 / sqrt((2 × 511 + E) × E) × 10⁻¹⁰  [m]
-```
+$$\lambda = \frac{h}{\sqrt{2\,m_0\,eV\!\left(1 + \dfrac{eV}{2\,m_0 c^2}\right)}}$$
 
-where `E` is the beam energy in keV. This is implemented in `calculateLambda()`.
+which simplifies (in practical units) to:
+
+$$\lambda \;[\text{m}] = \frac{12.3986}{\sqrt{(2\times511+E)\times E}} \times 10^{-10}$$
+
+where $E$ is the beam energy in keV, $m_0 c^2 = 511$ keV is the electron rest energy, $h$ is Planck's constant, and $e$ is the elementary charge. This is implemented in `calculateLambda()`.
 
 ### Step 2 — Polar Mesh and Objective Aperture
 
-A 2-D grid is created in angular (reciprocal) space, parameterised by semi-angle `α` (radians) and azimuthal angle `Φ`. Each pixel `(i, j)` maps to:
+A 2-D grid is created in angular (reciprocal) space. Each pixel $(i,\,j)$ is mapped to Cartesian angular coordinates:
 
-```
-α = sqrt(x² + y²),   Φ = atan2(y, x)
-```
+$$x_i = \frac{i - N/2}{N/2}\,\alpha_{\max}, \qquad y_j = \frac{j - N/2}{N/2}\,\alpha_{\max}$$
 
-where `x` and `y` run from −α_max to +α_max. A circular objective aperture mask `oapp` is set to 1 inside radius `obj_ap_r` and 0 outside. This is implemented in `polarMeshnOapp()`.
+and then converted to polar form:
+
+$$\alpha_{ij} = \sqrt{x_i^2 + y_j^2}, \qquad \Phi_{ij} = \mathrm{atan2}(y_j,\, x_i)$$
+
+where $\alpha$ is the semi-angle (mrad, same units as $\alpha_{\max}$) and $\Phi$ is the azimuthal angle. The objective aperture mask is:
+
+$$\mathrm{oapp}(\alpha) = \begin{cases} 1 & \alpha \le \alpha_{\mathrm{ap}} \\ 0 & \alpha > \alpha_{\mathrm{ap}} \end{cases}$$
+
+This is implemented in `polarMeshnOapp()`.
 
 ### Step 3 — Aberration Phase Function χ₀
 
 The geometrical aberration function in the Krivanek notation is:
 
-```
-χ₀(α, Φ) = (2π/λ) × Σ_{k} C_{n,m} × α^(n+1) × cos(m × (Φ − Φ_{n,m})) / (n+1)
-```
+$$\chi_0(\alpha,\Phi) = \frac{2\pi}{\lambda} \sum_{k} \frac{C_{n_k,m_k}}{n_k+1}\;\alpha^{n_k+1} \cos\!\bigl[m_k\,(\Phi - \Phi_{n_k,m_k})\bigr]$$
+
+where $C_{n,m}$ (meters) is the aberration coefficient magnitude, $\Phi_{n,m}$ (radians) is its orientation, and the indices $(n,\,m)$ label the order and symmetry of each term.
 
 The 14 aberration terms supported (up to 5th order) are:
 
@@ -58,61 +66,69 @@ This is implemented in `calculateChi0()`.
 
 The complex pupil function (exit-wave in aperture space) is:
 
-```
-χ(α, Φ) = exp(−i × χ₀(α, Φ))
-```
+$$\chi(\alpha,\Phi) = e^{-i\,\chi_0(\alpha,\Phi)}$$
 
-This is implemented in `calculateChi()`.
+The modulus is identically 1; only the phase encodes the lens aberrations. This is implemented in `calculateChi()`.
 
 ### Step 5 — Sample and Transmission Function
 
-An amorphous sample is modelled as a random noisy grating. The sample transmission function is:
+An amorphous sample is modelled as a random noisy grating. The sample transmission function under the phase-object approximation is:
 
-```
-t(r) = exp(−i × (π/4) × σ × V(r))
-```
+$$t(\mathbf{r}) = \exp\!\left(-i\,\frac{\pi}{4}\,\sigma\,V(\mathbf{r})\right)$$
 
-where `V(r)` is the random projected potential and `σ` is the interaction parameter (relativistically corrected, normalised to 300 kV). This is implemented in `generateSample()`, `calculateInteractionParam()`, and `generateTransmissionFn()`.
+where $V(\mathbf{r})$ is the random projected potential and $\sigma$ is the relativistic interaction parameter:
+
+$$\sigma = \frac{2\pi}{\lambda E} \cdot \frac{m_0 c^2 + eV}{2\,m_0 c^2 + eV}$$
+
+In the code $\sigma$ is normalised to its value at 300 kV so that the default coefficients are on a human-readable scale. This is implemented in `generateSample()`, `calculateInteractionParam()`, and `generateTransmissionFn()`.
 
 ### Step 6 — Ronchigram (Diffraction Intensity)
 
 The Ronchigram intensity is computed as:
 
-```
-I(q) = |FFT( t(r) × FFT( χ(α) ) )|² × oapp(q)
-```
+$$I(\mathbf{q}) = \Bigl|\mathcal{F}\bigl[t(\mathbf{r})\cdot\mathcal{F}[\chi(\boldsymbol{\alpha})]\bigr](\mathbf{q})\Bigr|^{2} \times \mathrm{oapp}(\mathbf{q})$$
 
 That is:
-1. Fourier-transform the pupil function χ into real space.
-2. Multiply by the sample transmission function t(r).
-3. Fourier-transform back to reciprocal space.
-4. Take the squared modulus and apply the objective aperture mask.
+1. $\mathcal{F}[\chi(\boldsymbol{\alpha})]$ — Fourier-transform the pupil function into real space.
+2. $t(\mathbf{r})\cdot(\ldots)$ — Multiply by the sample transmission function.
+3. $\mathcal{F}[\cdots](\mathbf{q})$ — Fourier-transform back to reciprocal space.
+4. $|\cdots|^{2}\times\mathrm{oapp}$ — Take the squared modulus and apply the objective aperture mask.
 
 This is implemented in `calcDiffract()`.
 
 ### Step 7 — π/4 Phase Limit Map
 
-Pixels where `|χ₀| > π/4` are masked to zero (shown in white), revealing the isochronous zone where the wave front aberration stays within the Rayleigh quarter-wave criterion. The radius of the largest circle that fits inside this zone is `r_max` (in mrad). This is implemented in `maskChi0()`.
+Pixels where the wave-front error exceeds the Rayleigh quarter-wave criterion are masked to zero:
+
+$$\mathrm{mask}(\alpha,\Phi) = \begin{cases} 255 & |\chi_0(\alpha,\Phi)| \le \dfrac{\pi}{4} \\[4pt] 0 & |\chi_0(\alpha,\Phi)| > \dfrac{\pi}{4} \end{cases}$$
+
+The radius $r_{\max}$ of the largest circle that fits entirely inside the white (valid) region is then:
+
+$$r_{\max} = \min\bigl\{\alpha \;:\; |\chi_0(\alpha,\Phi)| > \tfrac{\pi}{4}\bigr\}$$
+
+This is implemented in `maskChi0()`.
 
 ### Step 8 — Electron Probe
 
-The real-space probe intensity is:
+The real-space probe intensity formed by the aberrated lens is:
 
-```
-probe(r) = |FFT( χ(α) × aperture(α) )|²
-```
+$$P(\mathbf{r}) = \Bigl|\mathcal{F}\bigl[\chi(\boldsymbol{\alpha})\cdot A(\boldsymbol{\alpha})\bigr](\mathbf{r})\Bigr|^{2}$$
 
-The probe is shifted (fftshift) and normalised to 0–255. This is implemented in `probeGeneration()`.
+where $A(\boldsymbol{\alpha})$ is the circular aperture function. The result is fftshift-ed (so the probe centre appears at the image centre) and normalised to 0–255. This is implemented in `probeGeneration()`.
 
 ### Step 9 — Strehl Ratio
 
-The Strehl ratio measures how close the aberrated probe is to the diffraction limit:
+The Strehl ratio $S$ measures how close the aberrated probe is to the diffraction limit (ideal unaberrated lens):
 
-```
-S = ( |FFT(χ × A_s)|_max / |FFT(A_s)|_max )²
-```
+$$S = \left(\frac{\max\!\left|\mathcal{F}[\chi\cdot A_s]\right|}{\max\!\left|\mathcal{F}[A_s]\right|}\right)^{2}$$
 
-where `A_s` is a circular aperture of radius `r_strehl`. The code also searches for the aperture semi-angle that maximises the Strehl ratio to 0.8 (the Maréchal criterion). This is implemented in `singleStrehl()` and `pointEightStrehlSearch()`.
+where $A_s$ is a circular aperture of radius $r_s$. A value $S = 1$ corresponds to a perfect lens; $S \ge 0.8$ is the Maréchal criterion for diffraction-limited performance.
+
+The code also performs a bisection search to find the largest aperture semi-angle $r_s$ that still satisfies $S \ge 0.8$:
+
+$$r_{0.8} = \arg\max_{r_s}\, r_s \quad \text{subject to} \quad S(r_s) \ge 0.8$$
+
+This is implemented in `singleStrehl()` and `pointEightStrehlSearch()`.
 
 ### Data Flow Summary
 

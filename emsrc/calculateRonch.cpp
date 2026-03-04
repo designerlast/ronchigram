@@ -34,11 +34,18 @@ float* normalize(float* base, float scale, int dimX, int dimY) {
     }
     return base;
 }
+// Relativistically corrected de Broglie wavelength for electrons.
+// Formula: λ = h / sqrt(2 m0 eV (1 + eV / (2 m0 c²)))
+// Simplified to: λ [m] = 12.3986 / sqrt((2*511 + keV)*keV) * 1e-10
 float calculateLambda(float keV) {
     float lambda = 12.3986 / sqrt((2 * 511 + keV) * keV) * 1e-10;
     return lambda;
 }
 
+// Build a 2-D polar mesh in angular (reciprocal) space.
+// Each pixel (i,j) maps to semi-angle r = sqrt(x²+y²) and azimuth p = atan2(y,x),
+// where x and y run from -r_max to +r_max (in mrad).
+// The objective aperture mask oapp is 1 inside obj_ap_r and 0 outside.
 int polarMeshnOapp(float* rr, float* pp, float* oapp, float r_max, float obj_ap_r, int numPx) {
     float center = numPx / 2;
     int idx;
@@ -61,6 +68,9 @@ int polarMeshnOapp(float* rr, float* pp, float* oapp, float r_max, float obj_ap_
     return 0;
 }
 
+// Generate a random noisy grating as a simple amorphous-sample model.
+// Values are uniform random [0,1).  A coarser sub-sampled grid is tiled
+// at 'scaleFactor' to avoid aliasing at high resolution.
 float* noisyGrating(int dimX, int dimY) {
     srand(time(NULL));
     float* vals = new float[dimX * dimY];
@@ -83,6 +93,9 @@ float* generateSample(int dimX, int dimY, int scaleFactor) {
     return supersample;
 }
 
+// Build the sample transmission function t(r) = exp(-i * π/4 * σ * V(r))
+// where V(r) is the projected potential (random sample values) and σ is
+// the interaction parameter (relativistically corrected, normalised to 300 kV).
 complex<float>* generateTransmissionFn(float* sample, int dimX, int dimY, float interactionParam) {
     complex<float>* trans = new complex<float> [dimX * dimY];
     complex<float> imag(0.0, 1.0);
@@ -146,6 +159,11 @@ float* packageOutput(float* base1, float* base2, float* base3, float* scalars, i
     return imageStack;
 }
 
+// Compute the geometrical aberration phase χ₀(α, Φ) in the Krivanek notation:
+//   χ₀ = (2π/λ) × Σ_k  C_{n,m} × α^(n+1) × cos(m×(Φ−Φ_{n,m})) / (n+1)
+// magptr[k] = aberration magnitude C_{n,m} (metres)
+// angleptr[k] = aberration orientation Φ_{n,m} (radians)
+// 14 terms are supported, covering aberrations up to 5th order.
 float* calculateChi0(float* magptr, float* angleptr, float* alrr, float* alpp, int numPx, int numAbs, float keV) {
     float* chi0 = new float[numPx * numPx];
     int n[14] = {1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 5, 5};
@@ -161,6 +179,9 @@ float* calculateChi0(float* magptr, float* angleptr, float* alrr, float* alpp, i
     return chi0;
 }
 
+// Convert the real-valued aberration phase χ₀ into the complex pupil function
+//   χ(α, Φ) = exp(−i × χ₀(α, Φ))
+// This represents the phase-only transfer function of the aberrated lens.
 complex<float>* calculateChi(float* chi0, int numPx) {
     complex<float>* chi = new complex<float> [numPx * numPx];
     complex<float> imag(0.0, 1.0);
@@ -170,6 +191,10 @@ complex<float>* calculateChi(float* chi0, int numPx) {
     return chi;
 }
 
+// Build the π/4 phase-limit mask.
+// Pixels where |χ₀| > threshold (default π/4) are set to 0 (outside the
+// isochronous zone); others are set to 255.
+// Also returns the radius of the largest circle fitting inside the zone (r_max, mrad × 1000).
 float maskChi0(float* chi0, float* alrr, int numPx, float threshold) {
     float rmax = 1e5;
     for (int i = 0; i < numPx * numPx; i++) {
@@ -221,6 +246,13 @@ complex<float>* cmplxFFT(complex<float>* comp, int dimX, int dimY) {
     return fftResult;
 }
 
+// Compute the Ronchigram diffraction intensity:
+//   I(q) = |FFT( t(r) × FFT( χ(α) ) )|² × oapp(q)
+// Steps:
+//  1. FFT(χ) → real-space probe (before aperture)
+//  2. Multiply by sample transmission function t(r)
+//  3. FFT back to reciprocal space
+//  4. |·|² and apply objective aperture mask
 float* calcDiffract(complex<float>* chi, complex<float>* trans, float* oapp, int numPx) {
     // want: abs(fft(trans*fft(chi)))
 
@@ -238,6 +270,9 @@ float* calcDiffract(complex<float>* chi, complex<float>* trans, float* oapp, int
     return diffInt;
 }
 
+// Relativistically corrected interaction parameter σ, normalised to the
+// value at 300 kV, used as the multiplicative factor in the transmission
+// function phase: σ = (2π / λE) × (m₀c² + eV) / (2m₀c² + eV).
 float calculateInteractionParam(float keV) {
     float keV_300 = 300;
     float c = 3e8;
@@ -250,6 +285,10 @@ float calculateInteractionParam(float keV) {
     return param / param_300;
 }
 
+// Compute the Strehl ratio for a given aperture radius r_strehl (mrad × 1000).
+// S = ( max|FFT(χ × A_s)| / max|FFT(A_s)| )²
+// where A_s is a circular aperture of radius r_strehl.
+// A Strehl ratio of 1 indicates a perfect (diffraction-limited) lens.
 float singleStrehl(float rmax, complex<float>* chi, float al_max, int numPx){
     float strr[numPx * numPx];
     float stpp[numPx * numPx];
@@ -273,6 +312,9 @@ float singleStrehl(float rmax, complex<float>* chi, float al_max, int numPx){
     return strehl;
 }
 
+// Generate the real-space electron probe intensity:
+//   probe(r) = |FFT( χ(α) × aperture(α) )|²
+// The result is fftshift-ed and normalised to 0–255.
 float* probeGeneration(complex<float>* chi, int numPx, float* oapp){
     complex<float>* obj_aperture = realToComplex(oapp, numPx, numPx);
     complex<float>* probe = new complex<float> [numPx * numPx];
@@ -286,6 +328,9 @@ float* probeGeneration(complex<float>* chi, int numPx, float* oapp){
     return probe_out;
 }
 
+// Binary search for the aperture semi-angle that achieves a Strehl ratio of
+// exactly 0.8 (the Maréchal criterion for diffraction-limited imaging).
+// Starts from the π/4 radius (pi_radius) and searches within [1×, 1.8×] that range.
 float* pointEightStrehlSearch(float pi_radius, complex<float>* chi, float al_max, int numPx){
 
     float upper_bound = 1.8 * pi_radius/1000;
@@ -322,6 +367,26 @@ float* pointEightStrehlSearch(float pi_radius, complex<float>* chi, float al_max
 }
 
 
+// Main entry point called from JavaScript / WebAssembly.
+// buffer layout:
+//   [0]      numPx          – image size (pixels, square)
+//   [1]      al_max         – display semi-angle (mrad)
+//   [2]      obj_ap_r       – objective aperture semi-angle (mrad)
+//   [3]      scalefactor    – sample coarsening factor
+//   [4]      keV            – beam energy (keV)
+//   [5]      calcStrehl     – 1 = compute Strehl search, 0 = skip
+//   [6..19]  aberration magnitudes C_{n,m} (metres, 14 terms)
+//   [20..33] aberration orientations Φ_{n,m} (radians, 14 terms)
+//
+// Returns a flat float array:
+//   [0 .. numPx²-1]             Ronchigram image (0–255)
+//   [numPx² .. 2·numPx²-1]      π/4 phase-limit map (0 or 255)
+//   [2·numPx² .. 3·numPx²-1]    Electron probe image (0–255)
+//   [3·numPx²]                  r_max (mrad × 1000) – π/4 aperture radius
+//   [3·numPx²+1]                Strehl ratio at r_max
+//   [3·numPx²+2]                Strehl ratio at optimal aperture (−1 if skipped)
+//   [3·numPx²+3]                Optimal aperture semi-angle (mrad × 1000)
+//   [3·numPx²+4]                Number of bisection iterations used
 float* calcRonch(float* buffer, int bufSize) {
     int numPx = static_cast < int > (buffer[0]);
     float al_max = buffer[1]; //mrad
